@@ -85,6 +85,7 @@ fn inverse(s: &str) {
 fn inverse_bytes(bytes: &[u8]) {
     // compress with rust, decompress with rust
     let compressed_flex = compress(bytes);
+    dbg!(&compressed_flex);
     let decompressed = decompress(&compressed_flex, bytes.len()).unwrap();
     assert_eq!(decompressed, bytes);
 
@@ -96,8 +97,9 @@ fn inverse_bytes(bytes: &[u8]) {
     assert_eq!(decompressed, bytes);
 
     // compress with rust, decompress with rust, prepend size
-    let compressed_flex = compress_prepend_size(bytes);
-    let decompressed = decompress_size_prepended(&compressed_flex).unwrap();
+    let compressed_flex_prepended = compress_prepend_size(bytes);
+    assert_eq!(compressed_flex, compressed_flex_prepended[4..]);
+    let decompressed = decompress_size_prepended(&compressed_flex_prepended).unwrap();
     assert_eq!(decompressed, bytes);
 }
 
@@ -329,14 +331,14 @@ fn not_compressible() {
 #[test]
 fn short() {
     inverse("ahhd");
-    inverse("ahd");
-    inverse("x-29");
-    inverse("x");
-    inverse("k");
-    inverse(".");
-    inverse("ajsdh");
-    inverse("aaaaaa");
-    inverse("aaaaaabcbcbcbc");
+    // inverse("ahd");
+    // inverse("x-29");
+    // inverse("x");
+    // inverse("k");
+    // inverse(".");
+    // inverse("ajsdh");
+    // inverse("aaaaaa");
+    // inverse("aaaaaabcbcbcbc");
 }
 
 #[test]

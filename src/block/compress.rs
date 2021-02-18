@@ -249,31 +249,31 @@ fn count_same_bytes(input: &[u8], candidate: usize, cur: &mut usize) -> usize {
 /// Write an integer to the output in LSIC format.
 #[inline]
 #[cfg(feature = "safe-encode")]
-fn write_integer(output: &mut Vec<u8>, mut n: usize) {
+fn write_integer(output: &mut[u8], output_pos: &mut usize, mut n: usize) {
     while n >= 0xFF {
         n -= 0xFF;
-        push_byte(output, 0xFF);
+        push_byte(output, output_pos, 0xFF);
     }
 
     // Write the remaining byte.
-    push_byte(output, n as u8);
+    push_byte(output, output_pos, n as u8);
 }
 
 /// Write an integer to the output in LSIC format.
 #[inline]
 #[cfg(not(feature = "safe-encode"))]
-fn write_integer(output: &mut Vec<u8>, mut n: usize) {
+fn write_integer(output: &mut[u8], output_pos: &mut usize, mut n: usize) {
     // Write the 0xFF bytes as long as the integer is higher than said value.
-    push_u32(output, 0xFFFFFFFF);
+    push_u32(output, output_pos, 0xFFFFFFFF);
     while n >= 4 * 0xFF {
         n -= 4 * 0xFF;
-        unsafe{output.set_len(output.len() + 4);}
-        push_u32(output, 0xFFFFFFFF);
+        *output_pos += 4;
+        push_u32(output, output_pos, 0xFFFFFFFF);
     }
 
     // Updating output len for the remainder
-    unsafe{output.set_len(output.len() + 1 + n / 255);}
-    let last_index = output.len() - 1;
+    *output_pos += 1 + n / 255;
+    let last_index = *output_pos - 1;
     unsafe{
         // Write the remaining byte.
         *output.get_unchecked_mut(last_index) = (n % 255) as u8;
@@ -283,9 +283,9 @@ fn write_integer(output: &mut Vec<u8>, mut n: usize) {
 
 #[inline]
 #[cfg(not(feature = "safe-encode"))]
-fn push_u32(output: &mut Vec<u8>, el: u32) {
+fn push_u32(output: &mut[u8], output_pos: &mut usize, el: u32) {
     unsafe {
-        let out_ptr = output.as_mut_ptr().add(output.len());
+        let out_ptr = output.as_mut_ptr().add(*output_pos);
         core::ptr::copy_nonoverlapping(el.to_le_bytes().as_ptr(), out_ptr, 4);
     }
 }
@@ -293,7 +293,8 @@ fn push_u32(output: &mut Vec<u8>, el: u32) {
 /// Handle the last bytes from the input as literals
 #[cold]
 fn handle_last_literals(
-    output: &mut Vec<u8>,
+    output: &mut[u8],
+    output_pos: &mut usize,
     input: &[u8],
     input_size: usize,
     start: usize,
@@ -301,14 +302,14 @@ fn handle_last_literals(
     let lit_len = input_size - start;
 
     let token = token_from_literal(lit_len);
-    push_byte(output, token);
+    push_byte(output, output_pos, token);
     // output.push(token);
     if lit_len >= 0xF {
-        write_integer(output, lit_len - 0xF);
+        write_integer(output, output_pos, lit_len - 0xF);
     }
     // Now, write the actual literals.
-    copy_literals(output, &input[start..]);
-    output.len()
+    copy_literals(output, output_pos, &input[start..]);
+    *output_pos
 }
 
 /// Moves the cursors back as long as the bytes match, to find additional bytes in a duplicate
@@ -345,25 +346,27 @@ pub fn backtrack_match(candidate: &mut usize, cur: &mut usize, literal_start: us
 #[inline]
 pub fn compress_into_with_table<T: HashTable>(
     input: &[u8],
-    output: &mut Vec<u8>,
+    output: &mut[u8],
     dict: &mut T,
 ) -> usize {
+    // assert!(output.len() >= get_maximum_output_size(input.len()) - 4 );
     let input_size = input.len();
 
+    let mut output_pos = 0;
     // Input too small, no compression (all literals)
     if input_size < LZ4_MIN_LENGTH as usize {
         // The length (in bytes) of the literals section.
         let lit_len = input_size;
         let token = token_from_literal(lit_len);
-        push_byte(output, token);
+        push_byte(output, &mut output_pos, token);
         // output.push(token);
         if lit_len >= 0xF {
-            write_integer(output, lit_len - 0xF);
+            write_integer(output, &mut output_pos, lit_len - 0xF);
         }
 
         // Now, write the actual literals.
-        copy_literals(output, &input);
-        return output.len();
+        copy_literals(output, &mut output_pos, &input);
+        return output_pos ;
     }
 
     let hash = get_hash_at(input, 0);
@@ -394,7 +397,7 @@ pub fn compress_into_with_table<T: HashTable>(
             next_cur += step_size;
 
             if cur > end_pos_check {
-                return handle_last_literals(output, input, input_size, literal_start);
+                return handle_last_literals(output, &mut output_pos, input, input_size, literal_start);
             }
             // Find a candidate in the dictionary with the hash of the current four bytes.
             // Unchecked is safe as long as the values from the hash function don't exceed the size of the table.
@@ -434,25 +437,25 @@ pub fn compress_into_with_table<T: HashTable>(
 
         let token = token_from_literal_and_match_length(lit_len, duplicate_length);
         // Push the token to the output stream.
-        push_byte(output, token);
+        push_byte(output, &mut output_pos, token);
         // If we were unable to fit the literals length into the token, write the extensional
         // part through LSIC.
         if lit_len >= 0xF {
-            write_integer(output, lit_len - 0xF);
+            write_integer(output, &mut output_pos, lit_len - 0xF);
         }
 
         // Now, write the actual literals.
         //
         // The unsafe version copies blocks of 8bytes, and therefore may copy up to 7bytes more than needed.
         // This is safe, because the last 16 bytes (MF_LIMIT) are handled in handle_last_literals.
-        copy_literals_wild(output, &input, literal_start, lit_len);
+        copy_literals_wild(output, &mut output_pos, &input, literal_start, lit_len);
         // write the offset in little endian.
-        push_u16(output, offset);
+        push_u16(output, &mut output_pos, offset);
 
         // If we were unable to fit the duplicates length into the token, write the
         // extensional part through LSIC.
         if duplicate_length >= 0xF {
-            write_integer(output, duplicate_length - 0xF);
+            write_integer(output, &mut output_pos, duplicate_length - 0xF);
         }
         literal_start = cur;
         // forward_hash = get_hash_at(input, cur, dict_bitshift);
@@ -461,54 +464,65 @@ pub fn compress_into_with_table<T: HashTable>(
 
 #[inline]
 #[cfg(feature = "safe-encode")]
-fn push_byte(output: &mut Vec<u8>, el: u8) {
-    output.push(el);
+fn push_byte(output: &mut[u8], output_pos: &mut usize, el: u8) {
+    output[*output_pos] = el;
+    *output_pos+=1;
+    // output.push(el);
 }
 
 #[inline]
 #[cfg(not(feature = "safe-encode"))]
-fn push_byte(output: &mut Vec<u8>, el: u8) {
+fn push_byte(output: &mut[u8], output_pos: &mut usize, el: u8) {
     unsafe {
-        core::ptr::write(output.as_mut_ptr().add(output.len()), el);
-        output.set_len(output.len() + 1);
+        core::ptr::write(output.as_mut_ptr().add(*output_pos), el);
+        // output.set_len(output.len() + 1);
+        *output_pos+=1;
     }
 }
 
 #[inline]
 #[cfg(feature = "safe-encode")]
-fn push_u16(output: &mut Vec<u8>, el: u16) {
-    output.extend_from_slice(&el.to_le_bytes());
+fn push_u16(output: &mut[u8], output_pos: &mut usize, el: u16) {
+    output[*output_pos..*output_pos+2].copy_from_slice(&el.to_le_bytes());
+    *output_pos+=2;
 }
 
 #[inline]
 #[cfg(not(feature = "safe-encode"))]
-fn push_u16(output: &mut Vec<u8>, el: u16) {
+fn push_u16(output: &mut[u8], output_pos: &mut usize, el: u16) {
     unsafe {
-        let out_ptr = output.as_mut_ptr().add(output.len());
+        let out_ptr = output.as_mut_ptr().add(*output_pos);
         core::ptr::write(out_ptr, el as u8);
         core::ptr::write(out_ptr.add(1), (el >> 8) as u8);
-        output.set_len(output.len() + 2);
+        // output.set_len(output.len() + 2);
+        *output_pos+=2;
     }
 }
 
 #[inline]
-fn copy_literals(output: &mut Vec<u8>, input: &[u8]) {
-    output.extend_from_slice(input);
+fn copy_literals(output: &mut[u8], output_pos: &mut usize, input: &[u8]) {
+    output[*output_pos..*output_pos + input.len()].copy_from_slice(input);
+    *output_pos += input.len();
+    // output.extend_from_slice(input);
 }
 
 #[inline]
 #[cfg(feature = "safe-encode")]
-fn copy_literals_wild(output: &mut Vec<u8>, input: &[u8], input_start:usize, len:usize) {
-    output.extend_from_slice(&input[input_start..input_start + len]);
+fn copy_literals_wild(output: &mut[u8], output_pos: &mut usize, input: &[u8], input_start:usize, len:usize) {
+    output[*output_pos..*output_pos + len].copy_from_slice(&input[input_start..input_start + len]);
+    *output_pos += input.len();
+
+    // output.extend_from_slice(&input[input_start..input_start + len]);
 }
 
 #[inline]
 #[cfg(not(feature = "safe-encode"))]
-fn copy_literals_wild(output: &mut Vec<u8>, input: &[u8], input_start:usize, len:usize) {
+fn copy_literals_wild(output: &mut[u8], output_pos: &mut usize, input: &[u8], input_start:usize, len:usize) {
     use crate::block::wild_copy_from_src_8;
     unsafe{
-        wild_copy_from_src_8(input.as_ptr().add(input_start), output.as_mut_ptr().add(output.len()), len);
-        output.set_len(output.len() + len);
+        wild_copy_from_src_8(input.as_ptr().add(input_start), output.as_mut_ptr().add(*output_pos), len);
+        // output.set_len(output.len() + len);
+        *output_pos+= len;
     }
 }
 
@@ -523,19 +537,20 @@ pub fn get_maximum_output_size(input_len: usize) -> usize {
 ///
 /// The method will reserve the required space on the output vec.
 #[inline]
-pub fn compress_into(input: &[u8], compressed: &mut Vec<u8>) {
-    compressed.reserve(get_maximum_output_size(input.len()));
+pub fn compress_into(input: &[u8], compressed: &mut[u8]) -> usize {
+
     let (dict_size, dict_bitshift) = get_table_size(input.len());
-    if input.len() < u16::MAX as usize {
+    let compressed_length = if input.len() < u16::MAX as usize {
         let mut dict = HashTableU16::new(dict_size, dict_bitshift);
-        compress_into_with_table(input, compressed, &mut dict);
+        compress_into_with_table(input, compressed, &mut dict)
     } else if input.len() < u32::MAX as usize {
         let mut dict = HashTableU32::new(dict_size, dict_bitshift);
-        compress_into_with_table(input, compressed, &mut dict);
+        compress_into_with_table(input, compressed, &mut dict)
     } else {
         let mut dict = HashTableUsize::new(dict_size, dict_bitshift);
-        compress_into_with_table(input, compressed, &mut dict);
-    }
+        compress_into_with_table(input, compressed, &mut dict)
+    };
+    compressed_length
 }
 
 /// Compress all bytes of `input` into `output`. The uncompressed size will be prepended as litte endian.
@@ -545,7 +560,22 @@ pub fn compress_prepend_size(input: &[u8]) -> Vec<u8> {
     // In most cases, the compression won't expand the size, so we set the input size as capacity.
     let mut compressed = Vec::new();
     compressed.extend_from_slice(&[0, 0, 0, 0]);
-    compress_into(input, &mut compressed);
+
+    compressed.reserve(get_maximum_output_size(input.len()));
+    #[cfg(feature = "safe-encode")]
+    {
+        compressed.resize(get_maximum_output_size(input.len()), 0);
+    }
+
+    let compressed_length = compress_into(input, &mut compressed[4..]);
+    #[cfg(feature = "safe-encode")]
+    {
+        compressed.resize(compressed_length + 4, 0);
+    }
+    #[cfg(not(feature = "safe-encode"))]
+    {
+        unsafe{ compressed.set_len(compressed_length + 4); }
+    }
     let size = input.len() as u32;
     compressed[0] = size as u8;
     compressed[1] = (size >> 8) as u8;
@@ -560,7 +590,21 @@ pub fn compress_prepend_size(input: &[u8]) -> Vec<u8> {
 pub fn compress(input: &[u8]) -> Vec<u8> {
     // In most cases, the compression won't expand the size, so we set the input size as capacity.
     let mut compressed = Vec::new();
-    compress_into(input, &mut compressed);
+    compressed.reserve(get_maximum_output_size(input.len()));
+    #[cfg(feature = "safe-encode")]
+    {
+        compressed.resize(get_maximum_output_size(input.len()), 0);
+    }
+    let compressed_length = compress_into(input, &mut compressed);
+    #[cfg(feature = "safe-encode")]
+    {
+        compressed.resize(compressed_length, 0);
+    }
+    #[cfg(not(feature = "safe-encode"))]
+    {
+        unsafe{ compressed.set_len(compressed_length); }
+    }
+     
     compressed
 }
 
