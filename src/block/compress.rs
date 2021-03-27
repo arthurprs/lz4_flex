@@ -370,29 +370,17 @@ fn compress_internal<T: HashTable>(
     ext_dict: &[u8],
 ) -> usize {
     assert!(ext_dict.len() < u16::MAX as usize);
-    let input_size = input.len();
 
     // Input too small, no compression (all literals)
-    if input_size < LZ4_MIN_LENGTH as usize {
-        // The length (in bytes) of the literals section.
-        let lit_len = input_size;
-        let token = token_from_literal(lit_len);
-        push_byte(output, token);
-        // output.push(token);
-        if lit_len >= 0xF {
-            write_integer(output, lit_len - 0xF);
-        }
-
-        // Now, write the actual literals.
-        copy_literals(output, &input);
-        return output.len();
+    if input.len() < LZ4_MIN_LENGTH as usize {
+        return handle_last_literals(output, input, input.len(), 0);
     }
 
     let hash = get_hash_at(input, 0);
     dict.put_at(hash, /* 0 + */ ext_dict.len());
 
     assert!(LZ4_MIN_LENGTH as usize > END_OFFSET);
-    let end_pos_check = input_size - MFLIMIT as usize;
+    let end_pos_check = input.len() - MFLIMIT;
 
     let mut cur = 0;
     let mut literal_start = cur;
@@ -417,7 +405,7 @@ fn compress_internal<T: HashTable>(
             next_cur += step_size;
 
             if cur > end_pos_check {
-                return handle_last_literals(output, input, input_size, literal_start);
+                return handle_last_literals(output, input, input.len(), literal_start);
             }
             // Find a candidate in the dictionary with the hash of the current four bytes.
             // Unchecked is safe as long as the values from the hash function don't exceed the size of the table.
