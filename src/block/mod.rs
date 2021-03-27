@@ -52,7 +52,7 @@ use core::{fmt, ptr};
 /// When a block can reference data from another block, it can start immediately with a match and no literal, so a block of 12 bytes can be compressed.
 const MFLIMIT: u32 = 16;
 
-/// The last 5 bytes of input are always literals. Therefore, the last sequence contains at least 5 bytes.
+/// The last 7 bytes of input are always literals. Therefore, the last sequence contains at least 7 bytes.
 const END_OFFSET: usize = 7;
 
 /// https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md#end-of-block-restrictions
