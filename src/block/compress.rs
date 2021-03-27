@@ -411,7 +411,6 @@ fn compress_internal<T: HashTable>(
 
         // In this loop we search for duplicates via the hashtable. 4bytes or 8bytes are hashed and compared.
         loop {
-            non_match_count += 1;
             step_size = non_match_count >> INCREASE_STEPSIZE_BITSHIFT;
 
             cur = next_cur;
@@ -450,6 +449,8 @@ fn compress_internal<T: HashTable>(
             if candidate_batch == get_batch(input, cur) {
                 break;
             }
+
+            non_match_count += 1;
         }
 
         backtrack_match(
