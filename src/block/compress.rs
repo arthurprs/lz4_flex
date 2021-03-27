@@ -124,59 +124,46 @@ fn token_from_literal_and_match_length(lit_len: usize, duplicate_length: usize) 
 /// Counts the number of same bytes in two byte streams.
 /// `input` is the complete input
 /// `cur` is the current position in the input. it will be incremented by the number of matched bytes
-/// `input_dupl` is a pointer back in the input
+/// `source` either the same as input or an external slice
+/// `candidate` is the candidate position in `source`
 ///
-/// The function ignores the last 7bytes (END_OFFSET) in input as this should be literals.
+/// The function ignores the last 5 bytes (END_OFFSET) in input as this should be literals.
 #[inline]
 #[cfg(feature = "safe-encode")]
 fn count_same_bytes(input: &[u8], cur: &mut usize, source: &[u8], candidate: usize) -> usize {
-    let cand_slice = &source[candidate as usize..];
+    const USIZE_SIZE: usize = core::mem::size_of::<usize>();
     let cur_slice = &input[*cur..input.len() - END_OFFSET];
+    let cand_slice = &source[candidate as usize..];
+    let block_search_len = cur_slice.len().min(cand_slice.len()) / USIZE_SIZE * USIZE_SIZE;
 
     let mut num = 0;
-    const USIZE_SIZE: usize = core::mem::size_of::<usize>();
-    for (block1, block2) in cur_slice
+    for (block1, block2) in cur_slice[..block_search_len]
         .chunks_exact(USIZE_SIZE)
-        .zip(cand_slice.chunks_exact(USIZE_SIZE))
+        .zip(cand_slice[..block_search_len].chunks_exact(USIZE_SIZE))
     {
-        let input_block = as_usize_le(block1);
-        let match_block = as_usize_le(block2);
+        let input_block = usize::from_le_bytes(block1.try_into().unwrap());
+        let match_block = usize::from_le_bytes(block2.try_into().unwrap());
 
         if input_block == match_block {
             num += USIZE_SIZE;
         } else {
             let diff = input_block ^ match_block;
             num += get_common_bytes(diff) as usize;
-            break;
+            *cur += num;
+            return num;
         }
     }
 
+    let cur_slice = &cur_slice[block_search_len..];
+    let cand_slice = &cand_slice[block_search_len..];
+    num += cur_slice
+        .iter()
+        .zip(cand_slice)
+        .take_while(|(a, b)| a == b)
+        .count();
+
     *cur += num;
     num
-}
-
-#[inline]
-#[cfg(feature = "safe-encode")]
-#[cfg(target_pointer_width = "64")]
-fn as_usize_le(array: &[u8]) -> usize {
-    (array[0] as usize)
-        | ((array[1] as usize) << 8)
-        | ((array[2] as usize) << 16)
-        | ((array[3] as usize) << 24)
-        | ((array[4] as usize) << 32)
-        | ((array[5] as usize) << 40)
-        | ((array[6] as usize) << 48)
-        | ((array[7] as usize) << 56)
-}
-
-#[inline]
-#[cfg(feature = "safe-encode")]
-#[cfg(target_pointer_width = "32")]
-fn as_usize_le(array: &[u8]) -> usize {
-    (array[0] as usize)
-        | ((array[1] as usize) << 8)
-        | ((array[2] as usize) << 16)
-        | ((array[3] as usize) << 24)
 }
 
 /// Counts the number of same bytes in two byte streams.
@@ -752,5 +739,12 @@ mod tests {
         crate::block::decompress::decompress_into_with_dict(&out, &mut trip, &input).unwrap();
         assert_eq!(input, trip);
         assert!(out.len() < compress(input).len());
+    }
+
+    #[test]
+    fn test_compress_at_mf_limit() {
+        let input: &[u8] = b"aaaaaaaabaaa\n";
+        let out = compress(&input);
+        assert!(out.len() < input.len());
     }
 }
