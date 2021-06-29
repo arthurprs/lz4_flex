@@ -1,10 +1,14 @@
 //! The decompression algorithm.
 
 use core::convert::TryInto;
+use std::mem::MaybeUninit;
 
 use crate::block::DecompressError;
-use crate::block::Sink;
 use crate::block::MINMATCH;
+use crate::sink::slice_as_uninit_ref;
+use crate::sink::Sink;
+use crate::sink::SliceSink;
+use crate::sink::VecSink;
 use alloc::vec::Vec;
 
 /// Read an integer LSIC (linear small integer code) encoded.
@@ -78,36 +82,12 @@ fn does_token_fit(token: u8) -> bool {
 }
 
 /// Decompress all bytes of `input` into `output`.
-/// `output` should be preallocated with a size of of the uncompressed data.
-#[inline]
-pub fn decompress_into(
-    input: &[u8],
-    output: &mut [u8],
-    output_pos: usize,
-) -> Result<usize, DecompressError> {
-    decompress_internal::<false>(input, &mut (output, output_pos).into(), b"")
-}
-
-/// Decompress all bytes of `input` into `output`.
 ///
 /// Returns the number of bytes written (decompressed) into `output`.
-#[inline]
-pub fn decompress_into_with_dict(
+#[inline(always)]
+pub(crate) fn decompress_internal<SINK: Sink, const USE_DICT: bool>(
     input: &[u8],
-    output: &mut [u8],
-    output_pos: usize,
-    ext_dict: &[u8],
-) -> Result<usize, DecompressError> {
-    decompress_internal::<true>(input, &mut (output, output_pos).into(), ext_dict)
-}
-
-/// Decompress all bytes of `input` into `output`.
-///
-/// Returns the number of bytes written (decompressed) into `output`.
-#[inline]
-fn decompress_internal<const USE_DICT: bool>(
-    input: &[u8],
-    output: &mut Sink,
+    output: &mut SINK,
     ext_dict: &[u8],
 ) -> Result<usize, DecompressError> {
     // Decode into our vector.
@@ -151,9 +131,10 @@ fn decompress_internal<const USE_DICT: bool>(
             // that we are far away enough from the end so we can safely copy 16 bytes
             {
                 let pos = output.pos();
-                output.output[pos..pos + 16].copy_from_slice(&input[input_pos..input_pos + 16]);
+                output.output()[pos..pos + 16]
+                    .copy_from_slice(&slice_as_uninit_ref(input)[input_pos..input_pos + 16]);
             }
-            output.pos += literal_length;
+            output.advance(literal_length);
             input_pos += literal_length;
 
             let offset = read_u16(input, &mut input_pos)? as usize;
@@ -177,12 +158,14 @@ fn decompress_internal<const USE_DICT: bool>(
                 return Err(DecompressError::OffsetOutOfBounds);
             }
             if offset >= match_length {
-                output.output.copy_within(start..start + 18, output.pos());
-                output.pos += match_length;
+                let pos = output.pos();
+                output.output().copy_within(start..start + 18, pos);
+                output.advance(match_length);
             } else {
                 for i in start..start + match_length {
-                    let b = output.as_slice()[i];
-                    output.push(b);
+                    let pos = output.pos();
+                    output.output()[pos] = output.output()[i];
+                    output.advance(1);
                 }
             }
 
@@ -204,9 +187,9 @@ fn decompress_internal<const USE_DICT: bool>(
                 return Err(DecompressError::LiteralOutOfBounds);
             }
             #[cfg(feature = "checked-decode")]
-            if output.pos + literal_length > output.capacity() {
+            if output.pos() + literal_length > output.capacity() {
                 return Err(DecompressError::OutputTooSmall {
-                    expected: output.pos + literal_length,
+                    expected: output.pos() + literal_length,
                     actual: output.capacity(),
                 });
             }
@@ -237,9 +220,9 @@ fn decompress_internal<const USE_DICT: bool>(
         }
 
         #[cfg(feature = "checked-decode")]
-        if output.pos + match_length > output.capacity() {
+        if output.pos() + match_length > output.capacity() {
             return Err(DecompressError::OutputTooSmall {
-                expected: output.pos + match_length,
+                expected: output.pos() + match_length,
                 actual: output.capacity(),
             });
         }
@@ -260,13 +243,13 @@ fn decompress_internal<const USE_DICT: bool>(
 
 #[inline]
 fn copy_from_dict(
-    output: &mut Sink,
+    output: &mut impl Sink,
     ext_dict: &[u8],
     offset: usize,
     match_length: usize,
 ) -> Result<usize, DecompressError> {
     // If we're here we know offset > output.pos
-    debug_assert!(offset > output.pos);
+    debug_assert!(offset > output.pos());
     let (dict_offset, did_overflow) = ext_dict.len().overflowing_sub(offset - output.pos());
     if did_overflow {
         return Err(DecompressError::OffsetOutOfBounds);
@@ -281,7 +264,7 @@ fn copy_from_dict(
 /// Extends output by self-referential copies
 #[inline(always)] // (always) necessary otherwise compiler fails to inline it
 fn duplicate_slice(
-    output: &mut Sink,
+    output: &mut impl Sink,
     offset: usize,
     match_length: usize,
 ) -> Result<(), DecompressError> {
@@ -296,13 +279,15 @@ fn duplicate_slice(
         let output_end = output.pos() + match_length;
         if output_end + (16 - 1) <= output.capacity() {
             for i in (start..start + match_length).step_by(16) {
-                output.output.copy_within(i..i + 16, output.pos());
-                output.pos += 16;
+                let pos = output.pos();
+                output.output().copy_within(i..i + 16, pos);
+                output.advance(16);
             }
         } else {
+            let pos = output.pos();
             output
-                .output
-                .copy_within(start..start + match_length, output.pos());
+                .output()
+                .copy_within(start..start + match_length, pos);
         }
         output.set_pos(output_end);
     }
@@ -312,7 +297,7 @@ fn duplicate_slice(
 /// self-referential copy for the case data start (end of output - offset) + match_length overlaps into output
 #[inline]
 fn duplicate_overlapping_slice(
-    sink: &mut Sink,
+    sink: &mut impl Sink,
     offset: usize,
     match_length: usize,
 ) -> Result<(), DecompressError> {
@@ -322,17 +307,42 @@ fn duplicate_overlapping_slice(
         return Err(DecompressError::OffsetOutOfBounds);
     }
     if offset == 1 {
-        let val = sink.as_slice()[start];
+        let val = sink.output()[start];
         let dest = sink.pos();
-        sink.output[dest..dest + match_length].fill(val);
-        sink.pos += match_length;
+        sink.output()[dest..dest + match_length].fill(val);
+        sink.advance(match_length);
     } else {
         for i in start..start + match_length {
-            let b = sink.as_slice()[i];
-            sink.push(b);
+            let pos = sink.pos();
+            sink.output()[pos] = sink.output()[i];
+            sink.advance(1);
         }
     }
     Ok(())
+}
+
+/// Decompress all bytes of `input` into `output`.
+/// `output` should be preallocated with a size of of the uncompressed data.
+#[inline]
+pub fn decompress_into(
+    input: &[u8],
+    output: &mut [u8],
+    output_pos: usize,
+) -> Result<usize, DecompressError> {
+    decompress_internal::<_, false>(input, &mut SliceSink::new(output, output_pos), b"")
+}
+
+/// Decompress all bytes of `input` into `output`.
+///
+/// Returns the number of bytes written (decompressed) into `output`.
+#[inline]
+pub fn decompress_into_with_dict(
+    input: &[u8],
+    output: &mut [u8],
+    output_pos: usize,
+    ext_dict: &[u8],
+) -> Result<usize, DecompressError> {
+    decompress_internal::<_, true>(input, &mut SliceSink::new(output, output_pos), ext_dict)
 }
 
 /// Decompress all bytes of `input` into a new vec. The first 4 bytes are the uncompressed size in litte endian.
@@ -348,8 +358,10 @@ pub fn decompress_size_prepended(input: &[u8]) -> Result<Vec<u8>, DecompressErro
 pub fn decompress(input: &[u8], uncompressed_size: usize) -> Result<Vec<u8>, DecompressError> {
     // Allocate a vector to contain the decompressed stream.
     let mut vec: Vec<u8> = Vec::with_capacity(uncompressed_size);
-    vec.resize(uncompressed_size, 0);
-    let decomp_len = decompress_into(input, &mut vec, 0)?;
+    // unsafe { vec.resize(uncompressed_size, 0); }
+    unsafe { vec.set_len(uncompressed_size); }
+    let decomp_len =
+        decompress_internal::<_, false>(input, &mut VecSink::new(&mut vec, 0, 0), b"")?;
     if decomp_len != uncompressed_size {
         return Err(DecompressError::UncompressedSizeDiffers {
             expected: uncompressed_size,
@@ -379,8 +391,8 @@ pub fn decompress_with_dict(
 ) -> Result<Vec<u8>, DecompressError> {
     // Allocate a vector to contain the decompressed stream.
     let mut vec: Vec<u8> = Vec::with_capacity(uncompressed_size);
-    vec.resize(uncompressed_size, 0);
-    let decomp_len = decompress_into_with_dict(input, &mut vec, 0, ext_dict)?;
+    let decomp_len =
+        decompress_internal::<_, true>(input, &mut VecSink::new(&mut vec, 0, 0), ext_dict)?;
     if decomp_len != uncompressed_size {
         return Err(DecompressError::UncompressedSizeDiffers {
             expected: uncompressed_size,
