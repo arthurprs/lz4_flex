@@ -4,10 +4,10 @@ extern crate criterion;
 use std::io::{Read, Write};
 
 use self::criterion::*;
-use lz_fear::raw::compress2;
-use lz_fear::raw::decompress_raw;
-use lz_fear::raw::U16Table;
-use lz_fear::raw::U32Table;
+// use lz_fear::raw::compress2;
+// use lz_fear::raw::decompress_raw;
+// use lz_fear::raw::U16Table;
+// use lz_fear::raw::U32Table;
 
 const COMPRESSION1K: &'static [u8] = include_bytes!("compression_1k.txt");
 const COMPRESSION34K: &'static [u8] = include_bytes!("compression_34k.txt");
@@ -25,21 +25,21 @@ const ALL: &[&[u8]] = &[
     COMPRESSION95K_VERY_GOOD_LOGO as &[u8],
 ];
 
-fn compress_lz4_fear(input: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    if input.len() <= 0xFFFF {
-        compress2(input, 0, &mut U16Table::default(), &mut buf).unwrap();
-    } else {
-        compress2(input, 0, &mut U32Table::default(), &mut buf).unwrap();
-    }
-    buf
-}
+// fn compress_lz4_fear(input: &[u8]) -> Vec<u8> {
+//     let mut buf = Vec::new();
+//     if input.len() <= 0xFFFF {
+//         compress2(input, 0, &mut U16Table::default(), &mut buf).unwrap();
+//     } else {
+//         compress2(input, 0, &mut U32Table::default(), &mut buf).unwrap();
+//     }
+//     buf
+// }
 
-fn decompress_lz4_fear(input: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::new();
-    decompress_raw(input, &[], &mut vec, std::usize::MAX).unwrap();
-    vec
-}
+// fn decompress_lz4_fear(input: &[u8]) -> Vec<u8> {
+//     let mut vec = Vec::new();
+//     decompress_raw(input, &[], &mut vec, std::usize::MAX).unwrap();
+//     vec
+// }
 
 fn compress_snap(input: &[u8]) -> Vec<u8> {
     snap::raw::Encoder::new().compress_vec(input).unwrap()

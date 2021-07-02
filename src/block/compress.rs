@@ -333,7 +333,7 @@ fn backtrack_match(
 /// A similar const argument could be used to disable the Prefix mode (eg. USE_PREFIX),
 /// which would impose `input_pos == 0 && input_stream_offset == 0`. Experiments didn't
 /// show significant improvement though.
-#[inline]
+#[inline(never)] // Intentionally avoid inlining
 pub(crate) fn compress_internal<T: HashTable, SINK: Sink, const USE_DICT: bool>(
     input: &[u8],
     input_pos: usize,
@@ -675,17 +675,25 @@ pub fn compress_prepend_size(input: &[u8]) -> Vec<u8> {
 /// Compress all bytes of `input`.
 #[inline]
 pub fn compress(input: &[u8]) -> Vec<u8> {
-    let mut compressed = Vec::with_capacity(get_maximum_output_size(input.len()));
-    compress_into_sink(input, &mut VecSink::new(&mut compressed, 0, 0)).unwrap();
+    let max_output_size = get_maximum_output_size(input.len());
+    let mut compressed = Vec::with_capacity(max_output_size);
+    compressed.resize(max_output_size, 0);
+    let compressed_len =
+        compress_into_sink(input, &mut SliceSink::new(&mut compressed, 0)).unwrap();
+    compressed.truncate(compressed_len);
     compressed
 }
 
 /// Compress all bytes of `input` with an external dictionary.
 #[inline]
 pub fn compress_with_dict(input: &[u8], ext_dict: &[u8]) -> Vec<u8> {
-    let mut compressed = Vec::with_capacity(get_maximum_output_size(input.len()));
-    compress_into_sink_with_dict(input, &mut VecSink::new(&mut compressed, 0, 0), ext_dict)
-        .unwrap();
+    let max_output_size = get_maximum_output_size(input.len());
+    let mut compressed = Vec::with_capacity(max_output_size);
+    compressed.resize(max_output_size, 0);
+    let compressed_len =
+        compress_into_sink_with_dict(input, &mut SliceSink::new(&mut compressed, 0), ext_dict)
+            .unwrap();
+    compressed.truncate(compressed_len);
     compressed
 }
 
